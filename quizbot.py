@@ -14,7 +14,7 @@ from telegram.ext import (
 )
 
 # ===== SOZLAMALAR =====
-TOKEN = os.getenv("TOKEN")  # ✅ Railway uchun
+TOKEN = os.getenv("8499982960:AAH2flAPVGydaRIBbhy_QkWGii0xT3BeM0s")  # ✅ Railway uchun
 ADMIN_ID = 5183129765
 
 # ===== MA'LUMOTLAR BAZASI =====
