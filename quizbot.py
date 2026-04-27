@@ -97,6 +97,7 @@ def admin_menu():
         [InlineKeyboardButton("🧑‍🤝‍🧑 Aktiv 24h", callback_data="active24")],
         [InlineKeyboardButton("⏰ 7 kun", callback_data="active7")],
         [InlineKeyboardButton("🚫 Block", callback_data="block")],
+        [InlineKeyboardButton("✅ Unblock", callback_data="unblock")],
         [InlineKeyboardButton("📢 Broadcast", callback_data="broadcast")]
     ])
 
@@ -148,7 +149,6 @@ async def send_q(update, context):
     ])
 
     txt = f"{i+1}) {q['q']}\n\n" + "\n".join(q["opts"])
-
     await update.effective_chat.send_message(txt, reply_markup=kb)
 
 # ===== JAVOB =====
@@ -170,7 +170,7 @@ async def answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["i"] += 1
     await send_q(update, context)
 
-# ===== ADMIN =====
+# ===== ADMIN CALLBACK =====
 async def admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
@@ -212,7 +212,11 @@ async def admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif q.data == "block":
         context.user_data["block"] = True
-        await q.message.reply_text("User ID yubor:")
+        await q.message.reply_text("Block qilish uchun user ID yubor:")
+
+    elif q.data == "unblock":
+        context.user_data["unblock"] = True
+        await q.message.reply_text("Unblock qilish uchun user ID yubor:")
 
     elif q.data == "broadcast":
         context.user_data["broadcast"] = True
@@ -238,6 +242,14 @@ async def text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         conn.close()
         context.user_data["block"] = False
         await update.message.reply_text("🚫 Block qilindi")
+
+    elif context.user_data.get("unblock") and uid == ADMIN_ID:
+        conn = sqlite3.connect("bot.db")
+        conn.execute("UPDATE users SET blocked=0 WHERE user_id=?", (int(t),))
+        conn.commit()
+        conn.close()
+        context.user_data["unblock"] = False
+        await update.message.reply_text("✅ Unblock qilindi")
 
     elif context.user_data.get("broadcast") and uid == ADMIN_ID:
         conn = sqlite3.connect("bot.db")
