@@ -11,7 +11,6 @@ from telegram.ext import (
     ContextTypes, MessageHandler, filters
 )
 
-# ===== SOZLAMALAR =====
 TOKEN = "8712005526:AAH-5esSoHp4E5HxrUZKFljEPO7MmWsKysM"
 ADMIN_ID = 5183129765
 
@@ -50,7 +49,7 @@ def update_user(uid, name, score):
     conn.commit()
     conn.close()
 
-# ===== SAVOLLAR =====
+# ===== QUESTIONS =====
 QUESTIONS = []
 
 def load_questions():
@@ -75,13 +74,12 @@ def load_questions():
 
     print(f"✅ {len(QUESTIONS)} savol yuklandi")
 
-# ===== MENYU =====
+# ===== MENU =====
 def main_menu(uid):
     menu = [
         [KeyboardButton("📝 Test boshlash")],
         [KeyboardButton("📊 Natijalar")]
     ]
-
     if uid == ADMIN_ID:
         menu.append([KeyboardButton("👑 Admin panel")])
 
@@ -96,8 +94,9 @@ def admin_menu():
         [InlineKeyboardButton("📁 Barchasi", callback_data="all")],
         [InlineKeyboardButton("🧑‍🤝‍🧑 Aktiv 24h", callback_data="active24")],
         [InlineKeyboardButton("⏰ 7 kun", callback_data="active7")],
-        [InlineKeyboardButton("🚫 Block", callback_data="block")],
-        [InlineKeyboardButton("✅ Unblock", callback_data="unblock")],
+        [InlineKeyboardButton("🚫 Block (ko‘p)", callback_data="block")],
+        [InlineKeyboardButton("✅ Unblock (ko‘p)", callback_data="unblock")],
+        [InlineKeyboardButton("📋 Block list", callback_data="blocklist")],
         [InlineKeyboardButton("📢 Broadcast", callback_data="broadcast")]
     ])
 
@@ -151,7 +150,7 @@ async def send_q(update, context):
     txt = f"{i+1}) {q['q']}\n\n" + "\n".join(q["opts"])
     await update.effective_chat.send_message(txt, reply_markup=kb)
 
-# ===== JAVOB =====
+# ===== ANSWER =====
 async def answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -170,57 +169,30 @@ async def answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["i"] += 1
     await send_q(update, context)
 
-# ===== ADMIN CALLBACK =====
+# ===== ADMIN =====
 async def admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
 
     conn = sqlite3.connect("bot.db")
 
-    if q.data == "users":
-        c = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
-        await q.message.reply_text(f"👥 {c} ta user")
-
-    elif q.data == "stats":
-        d = conn.execute("SELECT SUM(tests), SUM(correct) FROM users").fetchone()
-        await q.message.reply_text(f"📊 Test: {d[0]}\nTo‘g‘ri: {d[1]}")
-
-    elif q.data == "top":
-        rows = conn.execute("SELECT name, correct FROM users ORDER BY correct DESC LIMIT 10").fetchall()
-        txt = "🏆 TOP 10\n\n"
-        for i, r in enumerate(rows, 1):
-            txt += f"{i}. {r[0]} - {r[1]}\n"
-        await q.message.reply_text(txt)
-
-    elif q.data == "all":
-        rows = conn.execute("SELECT name, tests, correct FROM users").fetchall()
-        txt = ""
-        for r in rows:
-            foiz = (r[2]/(r[1]*30))*100 if r[1] > 0 else 0
-            txt += f"{r[0]} | {foiz:.1f}%\n"
-        await q.message.reply_text(txt[:4000])
-
-    elif q.data == "active24":
-        t = (datetime.now() - timedelta(hours=24)).strftime("%Y-%m-%d %H:%M")
-        rows = conn.execute("SELECT name FROM users WHERE last_active >= ?", (t,)).fetchall()
-        await q.message.reply_text(f"🧑‍🤝‍🧑 {len(rows)} aktiv (24h)")
-
-    elif q.data == "active7":
-        t = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d %H:%M")
-        rows = conn.execute("SELECT name FROM users WHERE last_active >= ?", (t,)).fetchall()
-        await q.message.reply_text(f"⏰ {len(rows)} aktiv (7 kun)")
-
-    elif q.data == "block":
+    if q.data == "block":
         context.user_data["block"] = True
-        await q.message.reply_text("Block qilish uchun user ID yubor:")
+        await q.message.reply_text("ID larni yubor (masalan: 123 456 789)")
 
     elif q.data == "unblock":
         context.user_data["unblock"] = True
-        await q.message.reply_text("Unblock qilish uchun user ID yubor:")
+        await q.message.reply_text("ID larni yubor")
 
-    elif q.data == "broadcast":
-        context.user_data["broadcast"] = True
-        await q.message.reply_text("Xabar yoz:")
+    elif q.data == "blocklist":
+        rows = conn.execute("SELECT user_id, name FROM users WHERE blocked=1").fetchall()
+        if not rows:
+            await q.message.reply_text("🚫 Blocklangan user yo‘q")
+        else:
+            txt = "🚫 BLOCK LIST:\n\n"
+            for r in rows:
+                txt += f"{r[1]} | {r[0]}\n"
+            await q.message.reply_text(txt[:4000])
 
     conn.close()
 
@@ -236,34 +208,30 @@ async def text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("👑 Panel", reply_markup=admin_menu())
 
     elif context.user_data.get("block") and uid == ADMIN_ID:
+        ids = t.replace(",", " ").split()
+        ids = [int(i) for i in ids if i.isdigit()]
+
         conn = sqlite3.connect("bot.db")
-        conn.execute("UPDATE users SET blocked=1 WHERE user_id=?", (int(t),))
+        for i in ids:
+            conn.execute("UPDATE users SET blocked=1 WHERE user_id=?", (i,))
         conn.commit()
         conn.close()
+
         context.user_data["block"] = False
-        await update.message.reply_text("🚫 Block qilindi")
+        await update.message.reply_text(f"🚫 {len(ids)} ta user block qilindi")
 
     elif context.user_data.get("unblock") and uid == ADMIN_ID:
+        ids = t.replace(",", " ").split()
+        ids = [int(i) for i in ids if i.isdigit()]
+
         conn = sqlite3.connect("bot.db")
-        conn.execute("UPDATE users SET blocked=0 WHERE user_id=?", (int(t),))
+        for i in ids:
+            conn.execute("UPDATE users SET blocked=0 WHERE user_id=?", (i,))
         conn.commit()
         conn.close()
+
         context.user_data["unblock"] = False
-        await update.message.reply_text("✅ Unblock qilindi")
-
-    elif context.user_data.get("broadcast") and uid == ADMIN_ID:
-        conn = sqlite3.connect("bot.db")
-        users = conn.execute("SELECT user_id FROM users").fetchall()
-        conn.close()
-
-        for u in users:
-            try:
-                await context.bot.send_message(u[0], t)
-            except:
-                pass
-
-        context.user_data["broadcast"] = False
-        await update.message.reply_text("✅ Yuborildi")
+        await update.message.reply_text(f"✅ {len(ids)} ta user unblock qilindi")
 
 # ===== RUN =====
 init_db()
