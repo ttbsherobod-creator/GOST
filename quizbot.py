@@ -14,7 +14,7 @@ from telegram.ext import (
 TOKEN = "8712005526:AAH-5esSoHp4E5HxrUZKFljEPO7MmWsKysM"
 ADMIN_ID = 5183129765
 
-# ===== DB =====
+# ================= DB =================
 def init_db():
     conn = sqlite3.connect("bot.db")
     cur = conn.cursor()
@@ -31,10 +31,21 @@ def init_db():
         allowed INTEGER DEFAULT 0
     )
     """)
+    conn.commit()
+    conn.close()
+
+# ===== ADMIN OLDINDAN RUXSAT BERISH =====
+def allow_user(user_id):
+    conn = sqlite3.connect("bot.db")
+    cur = conn.cursor()
+
+    cur.execute("INSERT OR IGNORE INTO users(user_id, allowed) VALUES(?,1)", (user_id,))
+    cur.execute("UPDATE users SET allowed=1 WHERE user_id=?", (user_id,))
 
     conn.commit()
     conn.close()
 
+# ===== USER SAQLASH =====
 def save_user(user):
     conn = sqlite3.connect("bot.db")
     cur = conn.cursor()
@@ -47,7 +58,7 @@ def save_user(user):
     conn.commit()
     conn.close()
 
-# ===== ACCESS =====
+# ===== ACCESS CHECK =====
 def check_access(uid):
     conn = sqlite3.connect("bot.db")
     cur = conn.cursor()
@@ -68,7 +79,7 @@ def check_access(uid):
 
     return True, ""
 
-# ===== QUESTIONS =====
+# ================= QUESTIONS =================
 QUESTIONS = []
 
 def load_questions():
@@ -93,7 +104,7 @@ def load_questions():
 
     print(f"✅ {len(QUESTIONS)} savol yuklandi")
 
-# ===== MENU =====
+# ================= MENU =================
 def main_menu(uid):
     menu = [
         [KeyboardButton("📝 Test boshlash")],
@@ -105,7 +116,7 @@ def main_menu(uid):
 
     return ReplyKeyboardMarkup(menu, resize_keyboard=True)
 
-# ===== START =====
+# ================= START =================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
 
@@ -121,7 +132,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=main_menu(user.id)
     )
 
-# ===== TEST =====
+# ================= TEST =================
 async def start_test(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ok, msg = check_access(update.effective_user.id)
     if not ok:
@@ -143,6 +154,7 @@ async def send_q(update, context):
 
         conn = sqlite3.connect("bot.db")
         cur = conn.cursor()
+
         now = datetime.now().strftime("%Y-%m-%d %H:%M")
 
         cur.execute("""
@@ -174,7 +186,7 @@ async def send_q(update, context):
         reply_markup=kb
     )
 
-# ===== ANSWER =====
+# ================= ANSWER =================
 async def answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -193,7 +205,7 @@ async def answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["i"] += 1
     await send_q(update, context)
 
-# ===== USER STATS =====
+# ================= USER STATS =================
 async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
 
@@ -216,60 +228,11 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"🕒 Oxirgi: {row[3]}"
     )
 
-# ===== ADMIN COMMANDS =====
-async def allow_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
-        return
+# ================= ADMIN PANEL =================
+async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("👑 Admin panel")
 
-    ids = context.args
-    conn = sqlite3.connect("bot.db")
-    cur = conn.cursor()
-
-    for i in ids:
-        if i.isdigit():
-            cur.execute("INSERT OR IGNORE INTO users(user_id, allowed) VALUES(?,1)", (int(i),))
-            cur.execute("UPDATE users SET allowed=1 WHERE user_id=?", (int(i),))
-
-    conn.commit()
-    conn.close()
-
-    await update.message.reply_text("✅ Ruxsat berildi")
-
-async def block_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
-        return
-
-    ids = context.args
-    conn = sqlite3.connect("bot.db")
-    cur = conn.cursor()
-
-    for i in ids:
-        if i.isdigit():
-            cur.execute("UPDATE users SET blocked=1 WHERE user_id=?", (int(i),))
-
-    conn.commit()
-    conn.close()
-
-    await update.message.reply_text("🚫 Block qilindi")
-
-async def unblock_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
-        return
-
-    ids = context.args
-    conn = sqlite3.connect("bot.db")
-    cur = conn.cursor()
-
-    for i in ids:
-        if i.isdigit():
-            cur.execute("UPDATE users SET blocked=0 WHERE user_id=?", (int(i),))
-
-    conn.commit()
-    conn.close()
-
-    await update.message.reply_text("✅ Unblock qilindi")
-
-# ===== TEXT =====
+# ================= TEXT =================
 async def text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     t = update.message.text
     uid = update.effective_user.id
@@ -280,16 +243,19 @@ async def text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif t == "📊 Mening natijalarim":
         await stats(update, context)
 
-# ===== RUN =====
+    elif t == "👑 Admin panel" and uid == ADMIN_ID:
+        await admin_panel(update, context)
+
+# ================= RUN =================
 init_db()
 load_questions()
+
+# ===== BU YERDA OLDINDAN ID QO‘SHASAN =====
+allow_user(5183129765)  # admin o‘zi
 
 app = ApplicationBuilder().token(TOKEN).build()
 
 app.add_handler(CommandHandler("start", start))
-app.add_handler(CommandHandler("allow", allow_cmd))
-app.add_handler(CommandHandler("block", block_cmd))
-app.add_handler(CommandHandler("unblock", unblock_cmd))
 app.add_handler(CallbackQueryHandler(answer, pattern="^[ABCD]$"))
 app.add_handler(MessageHandler(filters.TEXT, text))
 
