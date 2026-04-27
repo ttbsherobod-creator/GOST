@@ -11,7 +11,7 @@ from telegram.ext import (
     MessageHandler, ContextTypes, filters
 )
 
-TOKEN = "TOKENINGNI_QO'Y"
+TOKEN = "8712005526:AAH-5esSoHp4E5HxrUZKFljEPO7MmWsKysM"
 ADMIN_ID = 5183129765
 
 # ===== DB =====
