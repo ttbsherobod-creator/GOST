@@ -1,338 +1,719 @@
 import random
 import sqlite3
-from datetime import datetime, timedelta
+import asyncio
+from datetime import datetime
 from docx import Document
 
 from telegram import (
-    Update, InlineKeyboardButton, InlineKeyboardMarkup,
-    ReplyKeyboardMarkup, KeyboardButton
+    Update,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    ReplyKeyboardMarkup,
+    KeyboardButton
 )
+
 from telegram.ext import (
-    ApplicationBuilder, CommandHandler, CallbackQueryHandler,
-    MessageHandler, ContextTypes, filters
+    ApplicationBuilder,
+    CommandHandler,
+    CallbackQueryHandler,
+    ContextTypes,
+    MessageHandler,
+    filters
 )
+
+# =========================
+# SOZLAMALAR
+# =========================
 
 TOKEN = "8712005526:AAH-5esSoHp4E5HxrUZKFljEPO7MmWsKysM"
 ADMIN_ID = 5183129765
 
+# =========================
+# DATABASE
+# =========================
 
-# ================= DB =================
+def db():
+    return sqlite3.connect("bot_data.db")
+
+
 def init_db():
-    conn = sqlite3.connect("bot.db")
+    conn = db()
     cur = conn.cursor()
 
+    # users
     cur.execute("""
-    CREATE TABLE IF NOT EXISTS users(
+    CREATE TABLE IF NOT EXISTS users (
         user_id INTEGER PRIMARY KEY,
-        name TEXT,
+        full_name TEXT,
         username TEXT,
-        tests INTEGER DEFAULT 0,
-        correct INTEGER DEFAULT 0,
-        last_active TEXT,
-        blocked INTEGER DEFAULT 0,
-        allowed INTEGER DEFAULT 0
+        tests_count INTEGER DEFAULT 0,
+        total_score INTEGER DEFAULT 0,
+        best_score INTEGER DEFAULT 0,
+        last_active TEXT
+    )
+    """)
+
+    # allowed users
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS allowed_users (
+        user_id INTEGER PRIMARY KEY
+    )
+    """)
+
+    # blocked users
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS blocked_users (
+        user_id INTEGER PRIMARY KEY
     )
     """)
 
     conn.commit()
-    conn.close()
 
-
-def save_user(user):
-    conn = sqlite3.connect("bot.db")
-    cur = conn.cursor()
-
-    cur.execute("""
-    INSERT OR IGNORE INTO users(user_id,name,username,allowed)
-    VALUES(?,?,?,0)
-    """, (user.id, user.full_name, user.username))
+    # adminni avtomatik ruxsat berish
+    cur.execute(
+        "INSERT OR IGNORE INTO allowed_users (user_id) VALUES (?)",
+        (ADMIN_ID,)
+    )
 
     conn.commit()
     conn.close()
 
 
-def check_access(uid):
-    if uid == ADMIN_ID:
-        return True, ""
+# =========================
+# TESTLAR
+# =========================
 
-    conn = sqlite3.connect("bot.db")
-    cur = conn.cursor()
+questions = []
 
-    row = cur.execute(
-        "SELECT blocked, allowed FROM users WHERE user_id=?",
-        (uid,)
-    ).fetchone()
-    conn.close()
-
-    if not row:
-        return False, "❌ Ruxsat yo‘q"
-
-    blocked, allowed = row
-
-    if blocked:
-        return False, "🚫 Blocklangansiz"
-
-    if not allowed:
-        return False, "❌ Ruxsat yo‘q"
-
-    return True, ""
-
-
-# ================= QUESTIONS =================
-QUESTIONS = []
 
 def load_questions():
-    doc = Document("testlar.docx")
-    q, opts = {}, []
+    global questions
 
-    for p in doc.paragraphs:
-        t = p.text.strip()
-        if not t:
-            continue
+    try:
+        doc = Document("testlar.docx")
 
-        if t.startswith("ANSWER:"):
-            q["answer"] = t[-1]
-            q["opts"] = opts.copy()
-            QUESTIONS.append(q.copy())
-            q, opts = {}, []
-        elif t.startswith(("A)", "B)", "C)", "D)")):
-            opts.append(t)
-        else:
-            q["q"] = t
+        q = {}
+        opts = []
 
-    print(f"✅ {len(QUESTIONS)} savol yuklandi")
+        for p in doc.paragraphs:
+            text = p.text.strip()
+
+            if not text:
+                continue
+
+            if text.startswith(("A)", "B)", "C)", "D)")):
+                opts.append(text)
+
+            elif text.startswith("ANSWER:"):
+                answer = text.replace("ANSWER:", "").strip()
+
+                q["options"] = opts.copy()
+                q["answer"] = answer[0]
+
+                questions.append(q.copy())
+
+                q = {}
+                opts = []
+
+            else:
+                q["question"] = text
+
+        print(f"✅ {len(questions)} savol yuklandi")
+
+    except Exception as e:
+        print("❌ Savol yuklash xatosi:", e)
 
 
-# ================= MENU =================
-def menu(uid):
-    m = [
-        [KeyboardButton("📝 Test boshlash")],
+# =========================
+# USER TEKSHIRUV
+# =========================
+
+def is_admin(user_id):
+    return user_id == ADMIN_ID
+
+
+def is_blocked(user_id):
+    if is_admin(user_id):
+        return False
+
+    conn = db()
+    cur = conn.cursor()
+
+    cur.execute(
+        "SELECT * FROM blocked_users WHERE user_id=?",
+        (user_id,)
+    )
+
+    user = cur.fetchone()
+
+    conn.close()
+
+    return bool(user)
+
+
+def is_allowed(user_id):
+    if is_admin(user_id):
+        return True
+
+    if is_blocked(user_id):
+        return False
+
+    conn = db()
+    cur = conn.cursor()
+
+    cur.execute(
+        "SELECT * FROM allowed_users WHERE user_id=?",
+        (user_id,)
+    )
+
+    user = cur.fetchone()
+
+    conn.close()
+
+    return bool(user)
+
+
+# =========================
+# USER SAVE
+# =========================
+
+def save_user(user):
+    conn = db()
+    cur = conn.cursor()
+
+    cur.execute("""
+    INSERT OR IGNORE INTO users
+    (user_id, full_name, username)
+    VALUES (?, ?, ?)
+    """, (
+        user.id,
+        user.full_name,
+        user.username
+    ))
+
+    conn.commit()
+    conn.close()
+
+
+# =========================
+# STATISTIKA
+# =========================
+
+def update_stats(user_id, score):
+    conn = db()
+    cur = conn.cursor()
+
+    now = datetime.now().strftime("%d.%m.%Y %H:%M")
+
+    cur.execute("""
+    UPDATE users
+    SET
+        tests_count = tests_count + 1,
+        total_score = total_score + ?,
+        best_score = CASE
+            WHEN ? > best_score THEN ?
+            ELSE best_score
+        END,
+        last_active = ?
+    WHERE user_id = ?
+    """, (
+        score,
+        score,
+        score,
+        now,
+        user_id
+    ))
+
+    conn.commit()
+    conn.close()
+
+
+# =========================
+# TUGMALAR
+# =========================
+
+def main_menu(user_id):
+    buttons = [
+        [KeyboardButton("📝 Test ishlash")],
         [KeyboardButton("📊 Natijam")]
     ]
 
-    if uid == ADMIN_ID:
-        m.append([KeyboardButton("👑 Admin panel")])
+    if is_admin(user_id):
+        buttons.append([KeyboardButton("👑 Admin Panel")])
 
-    return ReplyKeyboardMarkup(m, resize_keyboard=True)
-
-
-# ================= ADMIN DASHBOARD =================
-def admin_panel_ui():
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("👥 Userlar", callback_data="ad_users"),
-         InlineKeyboardButton("📊 Statistika", callback_data="ad_stats")],
-
-        [InlineKeyboardButton("🏆 Top 10", callback_data="ad_top"),
-         InlineKeyboardButton("📋 Barchasi", callback_data="ad_all")],
-
-        [InlineKeyboardButton("🟢 Aktiv 24h", callback_data="ad_24h"),
-         InlineKeyboardButton("🚫 Block list", callback_data="ad_blocklist")],
-
-        [InlineKeyboardButton("🚫 Block", callback_data="ad_block"),
-         InlineKeyboardButton("🔓 Unblock", callback_data="ad_unblock")],
-
-        [InlineKeyboardButton("📢 Broadcast", callback_data="ad_broadcast")]
-    ])
+    return ReplyKeyboardMarkup(
+        buttons,
+        resize_keyboard=True
+    )
 
 
-# ================= START =================
+def admin_panel():
+    return ReplyKeyboardMarkup([
+        [KeyboardButton("👥 Aktiv userlar")],
+        [KeyboardButton("🚫 Block userlar")],
+        [KeyboardButton("✅ Allow user")],
+        [KeyboardButton("❌ Unblock user")],
+        [KeyboardButton("📋 Block list")],
+        [KeyboardButton("🔍 Search username")],
+        [KeyboardButton("🏠 Menu")]
+    ], resize_keyboard=True)
+
+
+# =========================
+# START
+# =========================
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
 
     save_user(user)
 
-    ok, msg = check_access(user.id)
-    if not ok:
-        await update.message.reply_text(msg)
+    if is_blocked(user.id):
+        await update.message.reply_text(
+            "🚫 Siz bloklangansiz."
+        )
         return
 
-    await update.message.reply_text("👋 Xush kelibsiz", reply_markup=menu(user.id))
-
-
-# ================= TEST =================
-async def start_test(update: Update, context):
-    ok, msg = check_access(update.effective_user.id)
-    if not ok:
-        await update.message.reply_text(msg)
+    if not is_allowed(user.id):
+        await update.message.reply_text(
+            "⛔ Sizga botdan foydalanish uchun ruxsat berilmagan."
+        )
         return
 
-    context.user_data["quiz"] = random.sample(QUESTIONS, min(30, len(QUESTIONS)))
-    context.user_data["i"] = 0
+    text = (
+        "✅ Xush kelibsiz\n\n"
+        "🆔 ID: {}\n"
+        "👤 {}\n"
+    ).format(user.id, user.full_name)
+
+    await update.message.reply_text(
+        text,
+        reply_markup=main_menu(user.id)
+    )
+
+
+# =========================
+# TEST BOSHLASH
+# =========================
+
+async def start_test(update, context):
+    user_id = update.effective_user.id
+
+    if not is_allowed(user_id):
+        return
+
+    if len(questions) == 0:
+        await update.message.reply_text(
+            "❌ Savollar topilmadi."
+        )
+        return
+
+    context.user_data["quiz"] = random.sample(
+        questions,
+        min(30, len(questions))
+    )
+
+    context.user_data["index"] = 0
     context.user_data["score"] = 0
 
-    await send_q(update, context)
+    await send_question(update, context)
 
 
-async def send_q(update, context):
-    i = context.user_data["i"]
+# =========================
+# SAVOL
+# =========================
+
+async def send_question(update, context):
+    idx = context.user_data["index"]
     quiz = context.user_data["quiz"]
 
-    if i >= len(quiz):
+    if idx >= len(quiz):
         score = context.user_data["score"]
-        uid = update.effective_user.id
 
-        conn = sqlite3.connect("bot.db")
+        update_stats(
+            update.effective_user.id,
+            score
+        )
+
+        text = (
+            f"🏁 Test tugadi\n\n"
+            f"✅ Natija: {score}/30"
+        )
+
+        await update.effective_message.reply_text(text)
+        return
+
+    q = quiz[idx]
+
+    context.user_data["current"] = q
+
+    keyboard = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("A", callback_data="A"),
+            InlineKeyboardButton("B", callback_data="B"),
+            InlineKeyboardButton("C", callback_data="C"),
+            InlineKeyboardButton("D", callback_data="D")
+        ]
+    ])
+
+    text = (
+        f"❓ {idx+1}-savol\n\n"
+        f"{q['question']}\n\n"
+        + "\n".join(q["options"])
+    )
+
+    await update.effective_message.reply_text(
+        text,
+        reply_markup=keyboard
+    )
+
+
+# =========================
+# CALLBACK
+# =========================
+
+async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    user_id = update.effective_user.id
+
+    if not is_allowed(user_id):
+        return
+
+    q = context.user_data.get("current")
+
+    if not q:
+        return
+
+    answer = query.data
+
+    if answer == q["answer"]:
+        context.user_data["score"] += 1
+
+        await query.message.reply_text(
+            f"✅ To'g'ri ({q['answer']})"
+        )
+
+    else:
+        await query.message.reply_text(
+            f"❌ Noto'g'ri ({q['answer']})"
+        )
+
+    context.user_data["index"] += 1
+
+    await send_question(update, context)
+
+
+# =========================
+# TEXT HANDLER
+# =========================
+
+async def texts(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    text = update.message.text
+
+    if is_blocked(user_id):
+        return
+
+    # admin panel
+    if text == "👑 Admin Panel":
+        if not is_admin(user_id):
+            return
+
+        await update.message.reply_text(
+            "👑 Admin Panel",
+            reply_markup=admin_panel()
+        )
+        return
+
+    # menu
+    if text == "🏠 Menu":
+        await update.message.reply_text(
+            "🏠 Menu",
+            reply_markup=main_menu(user_id)
+        )
+        return
+
+    # test
+    if text == "📝 Test ishlash":
+        await start_test(update, context)
+        return
+
+    # natija
+    if text == "📊 Natijam":
+        conn = db()
         cur = conn.cursor()
 
         cur.execute("""
-        UPDATE users SET
-        tests = tests + 1,
-        correct = correct + ?,
-        last_active = ?
+        SELECT tests_count,
+               total_score,
+               best_score
+        FROM users
         WHERE user_id=?
-        """, (score, datetime.now().strftime("%Y-%m-%d %H:%M"), uid))
+        """, (user_id,))
 
-        conn.commit()
+        row = cur.fetchone()
+
         conn.close()
 
-        await update.effective_chat.send_message(f"🏁 Natija: {score}/{len(quiz)}")
+        if not row:
+            return
+
+        tests, total, best = row
+
+        avg = 0
+
+        if tests > 0:
+            avg = round((total / (tests * 30)) * 100, 1)
+
+        msg = (
+            f"📊 Natijangiz\n\n"
+            f"🧪 Testlar: {tests}\n"
+            f"🏆 Eng yaxshi: {best}\n"
+            f"📈 O'rtacha: {avg}%"
+        )
+
+        await update.message.reply_text(msg)
         return
 
-    q = quiz[i]
-    context.user_data["cur"] = q
+    # ======================
+    # ADMIN FUNKSIYALAR
+    # ======================
 
-    kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("A", callback_data="A"),
-         InlineKeyboardButton("B", callback_data="B")],
-        [InlineKeyboardButton("C", callback_data="C"),
-         InlineKeyboardButton("D", callback_data="D")]
-    ])
+    if not is_admin(user_id):
+        return
 
-    await update.effective_chat.send_message(
-        f"{i+1}) {q['q']}\n\n" + "\n".join(q["opts"]),
-        reply_markup=kb
+    # aktiv users
+    if text == "👥 Aktiv userlar":
+        conn = db()
+        cur = conn.cursor()
+
+        cur.execute("""
+        SELECT full_name,
+               username,
+               user_id,
+               tests_count
+        FROM users
+        ORDER BY tests_count DESC
+        LIMIT 30
+        """)
+
+        rows = cur.fetchall()
+
+        conn.close()
+
+        if not rows:
+            await update.message.reply_text(
+                "Userlar yo'q"
+            )
+            return
+
+        msg = "👥 Aktiv userlar\n\n"
+
+        for i, r in enumerate(rows, start=1):
+            msg += (
+                f"{i}. {r[0]}\n"
+                f"@{r[1]}\n"
+                f"ID: {r[2]}\n"
+                f"Testlar: {r[3]}\n\n"
+            )
+
+        await update.message.reply_text(msg)
+        return
+
+    # allow user
+    if text.startswith("/allow"):
+        try:
+            ids = text.replace("/allow", "").strip().split()
+
+            conn = db()
+            cur = conn.cursor()
+
+            added = 0
+
+            for uid in ids:
+                cur.execute("""
+                INSERT OR IGNORE INTO allowed_users
+                (user_id)
+                VALUES (?)
+                """, (int(uid),))
+
+                added += 1
+
+            conn.commit()
+            conn.close()
+
+            await update.message.reply_text(
+                f"✅ {added} ta user qo'shildi"
+            )
+
+        except:
+            await update.message.reply_text(
+                "❌ Format:\n/allow 123456789"
+            )
+
+        return
+
+    # block
+    if text.startswith("/block"):
+        try:
+            ids = text.replace("/block", "").strip().split()
+
+            conn = db()
+            cur = conn.cursor()
+
+            blocked = 0
+
+            for uid in ids:
+                uid = int(uid)
+
+                if uid == ADMIN_ID:
+                    continue
+
+                cur.execute("""
+                INSERT OR IGNORE INTO blocked_users
+                (user_id)
+                VALUES (?)
+                """, (uid,))
+
+                blocked += 1
+
+            conn.commit()
+            conn.close()
+
+            await update.message.reply_text(
+                f"🚫 {blocked} ta user block qilindi"
+            )
+
+        except:
+            await update.message.reply_text(
+                "❌ Format:\n/block 123 456"
+            )
+
+        return
+
+    # unblock
+    if text.startswith("/unblock"):
+        try:
+            ids = text.replace("/unblock", "").strip().split()
+
+            conn = db()
+            cur = conn.cursor()
+
+            count = 0
+
+            for uid in ids:
+                cur.execute("""
+                DELETE FROM blocked_users
+                WHERE user_id=?
+                """, (int(uid),))
+
+                count += 1
+
+            conn.commit()
+            conn.close()
+
+            await update.message.reply_text(
+                f"✅ {count} ta user unblock qilindi"
+            )
+
+        except:
+            await update.message.reply_text(
+                "❌ Format:\n/unblock 123"
+            )
+
+        return
+
+    # block list
+    if text == "📋 Block list":
+        conn = db()
+        cur = conn.cursor()
+
+        cur.execute("""
+        SELECT user_id
+        FROM blocked_users
+        """)
+
+        rows = cur.fetchall()
+
+        conn.close()
+
+        if not rows:
+            await update.message.reply_text(
+                "🚫 Block list bo'sh"
+            )
+            return
+
+        msg = "🚫 Block list\n\n"
+
+        for r in rows:
+            msg += f"{r[0]}\n"
+
+        await update.message.reply_text(msg)
+        return
+
+    # search
+    if text.startswith("/search"):
+        username = text.replace("/search", "").strip()
+
+        conn = db()
+        cur = conn.cursor()
+
+        cur.execute("""
+        SELECT full_name,
+               username,
+               user_id
+        FROM users
+        WHERE username LIKE ?
+        """, (f"%{username}%",))
+
+        rows = cur.fetchall()
+
+        conn.close()
+
+        if not rows:
+            await update.message.reply_text(
+                "❌ Topilmadi"
+            )
+            return
+
+        msg = "🔍 Natijalar\n\n"
+
+        for r in rows:
+            msg += (
+                f"{r[0]}\n"
+                f"@{r[1]}\n"
+                f"ID: {r[2]}\n\n"
+            )
+
+        await update.message.reply_text(msg)
+        return
+
+
+# =========================
+# MAIN
+# =========================
+
+if __name__ == "__main__":
+    init_db()
+    load_questions()
+
+    print("🚀 Bot ishlayapti")
+
+    app = ApplicationBuilder().token(TOKEN).build()
+
+    app.add_handler(CommandHandler("start", start))
+
+    app.add_handler(
+        CallbackQueryHandler(callbacks)
     )
 
-
-# ================= ANSWER =================
-async def answer(update: Update, context):
-    q = update.callback_query
-    await q.answer()
-
-    cur = context.user_data.get("cur")
-    if not cur:
-        return
-
-    if q.data == cur["answer"]:
-        context.user_data["score"] += 1
-        await q.message.reply_text("✅ To‘g‘ri")
-    else:
-        await q.message.reply_text(f"❌ Noto‘g‘ri ({cur['answer']})")
-
-    context.user_data["i"] += 1
-    await send_q(update, context)
-
-
-# ================= STATS =================
-async def stats(update: Update, context):
-    uid = update.effective_user.id
-
-    conn = sqlite3.connect("bot.db")
-    row = conn.execute(
-        "SELECT tests, correct, last_active FROM users WHERE user_id=?",
-        (uid,)
-    ).fetchone()
-    conn.close()
-
-    if not row:
-        await update.message.reply_text("Yo‘q")
-        return
-
-    tests, correct, last = row
-    foiz = (correct / (tests * 30)) * 100 if tests else 0
-
-    await update.message.reply_text(
-        f"📊 Testlar: {tests}\n"
-        f"✅ To‘g‘ri: {correct}\n"
-        f"📈 {foiz:.1f}%\n"
-        f"🕒 {last}"
+    app.add_handler(
+        MessageHandler(
+            filters.TEXT & ~filters.COMMAND,
+            texts
+        )
     )
 
-
-# ================= ADMIN PANEL =================
-async def admin(update: Update, context):
-    if update.effective_user.id != ADMIN_ID:
-        return
-
-    await update.message.reply_text("👑 Panel", reply_markup=admin_panel_ui())
-
-
-async def admin_callback(update: Update, context):
-    q = update.callback_query
-    await q.answer()
-
-    if q.from_user.id != ADMIN_ID:
-        return
-
-    conn = sqlite3.connect("bot.db")
-    cur = conn.cursor()
-
-    if q.data == "ad_users":
-        c = cur.execute("SELECT COUNT(*) FROM users").fetchone()[0]
-        await q.message.reply_text(f"👥 Users: {c}")
-
-    elif q.data == "ad_stats":
-        total = cur.execute("SELECT COUNT(*) FROM users").fetchone()[0]
-        block = cur.execute("SELECT COUNT(*) FROM users WHERE blocked=1").fetchone()[0]
-        await q.message.reply_text(f"📊 Total: {total}\n🚫 Block: {block}")
-
-    elif q.data == "ad_top":
-        rows = cur.execute("""
-            SELECT name, correct FROM users
-            ORDER BY correct DESC LIMIT 10
-        """).fetchall()
-
-        txt = "🏆 Top 10:\n"
-        for i, r in enumerate(rows, 1):
-            txt += f"{i}. {r[0]} - {r[1]}\n"
-
-        await q.message.reply_text(txt)
-
-    elif q.data == "ad_all":
-        rows = cur.execute("SELECT user_id,name FROM users").fetchall()
-        txt = "\n".join([f"{r[0]} - {r[1]}" for r in rows])
-        await q.message.reply_text(txt)
-
-    elif q.data == "ad_blocklist":
-        rows = cur.execute("SELECT user_id,name FROM users WHERE blocked=1").fetchall()
-        txt = "\n".join([f"{r[0]} - {r[1]}" for r in rows])
-        await q.message.reply_text(txt or "Bo‘sh")
-
-    elif q.data == "ad_24h":
-        rows = cur.execute("""
-            SELECT COUNT(*) FROM users
-            WHERE last_active >= datetime('now','-1 day')
-        """).fetchone()[0]
-
-        await q.message.reply_text(f"🟢 24h: {rows}")
-
-
-# ================= TEXT =================
-async def text(update: Update, context):
-    t = update.message.text
-    uid = update.effective_user.id
-
-    if t == "📝 Test boshlash":
-        await start_test(update, context)
-
-    elif t == "📊 Natijam":
-        await stats(update, context)
-
-    elif t == "👑 Admin panel":
-        await admin(update, context)
-
-
-# ================= RUN =================
-init_db()
-load_questions()
-
-app = ApplicationBuilder().token(TOKEN).build()
-
-app.add_handler(CommandHandler("start", start))
-app.add_handler(CommandHandler("admin", admin))
-app.add_handler(CallbackQueryHandler(answer, pattern="^[ABCD]$"))
-app.add_handler(CallbackQueryHandler(admin_callback, pattern="^ad_"))
-app.add_handler(MessageHandler(filters.TEXT, text))
-
-print("🚀 BOT ISHGA TUSHDI")
-app.run_polling()
+    app.run_polling(drop_pending_updates=True)
