@@ -81,6 +81,7 @@ def load_questions():
         opts = []
 
         for p in doc.paragraphs:
+
             text = p.text.strip()
 
             if not text:
@@ -90,7 +91,11 @@ def load_questions():
                 opts.append(text)
 
             elif text.startswith("ANSWER:"):
-                answer = text.replace("ANSWER:", "").strip()
+
+                answer = text.replace(
+                    "ANSWER:",
+                    ""
+                ).strip()
 
                 q["options"] = opts.copy()
                 q["answer"] = answer[0]
@@ -116,35 +121,41 @@ def is_admin(user_id):
     return user_id == ADMIN_ID
 
 def is_blocked(user_id):
+
     if is_admin(user_id):
         return False
 
     conn = sqlite3.connect("bot_data.db")
     cur = conn.cursor()
 
-    cur.execute(
-        "SELECT * FROM blocked_users WHERE user_id=?",
-        (user_id,)
-    )
+    cur.execute("""
+    SELECT *
+    FROM blocked_users
+    WHERE user_id=?
+    """, (user_id,))
 
     result = cur.fetchone()
+
     conn.close()
 
     return result is not None
 
 def is_allowed(user_id):
+
     if is_admin(user_id):
         return True
 
     conn = sqlite3.connect("bot_data.db")
     cur = conn.cursor()
 
-    cur.execute(
-        "SELECT * FROM allowed_users WHERE user_id=?",
-        (user_id,)
-    )
+    cur.execute("""
+    SELECT *
+    FROM allowed_users
+    WHERE user_id=?
+    """, (user_id,))
 
     result = cur.fetchone()
+
     conn.close()
 
     return result is not None
@@ -154,10 +165,13 @@ def is_allowed(user_id):
 # =========================
 
 def update_stats(user, score):
+
     conn = sqlite3.connect("bot_data.db")
     cur = conn.cursor()
 
-    now = datetime.now().strftime("%d.%m.%Y %H:%M")
+    now = datetime.now().strftime(
+        "%d.%m.%Y %H:%M"
+    )
 
     cur.execute("""
     INSERT OR IGNORE INTO users(
@@ -194,6 +208,44 @@ def update_stats(user, score):
 
     conn.commit()
     conn.close()
+
+# =========================
+# PROFESSIONAL RANDOM
+# =========================
+
+def generate_quiz(user_data):
+
+    history = user_data.get("history", [])
+
+    # Oxirgi 60 ta savol qayta tushmaydi
+    recent_questions = set(history[-60:])
+
+    available = [
+        q for q in questions
+        if q["question"] not in recent_questions
+    ]
+
+    # Savollar kamayib qolsa
+    if len(available) < 30:
+        available = questions.copy()
+
+    # Kuchli random
+    random.shuffle(available)
+
+    quiz = available[:30]
+
+    # History saqlash
+    history.extend([
+        q["question"]
+        for q in quiz
+    ])
+
+    # Juda kattalashib ketmasin
+    history = history[-200:]
+
+    user_data["history"] = history
+
+    return quiz
 
 # =========================
 # MENULAR
@@ -278,17 +330,20 @@ def admin_panel():
 # START
 # =========================
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def start(update: Update,
+                context: ContextTypes.DEFAULT_TYPE):
 
     user_id = update.effective_user.id
 
     if is_blocked(user_id):
+
         await update.message.reply_text(
             "🚫 Siz bloklangansiz."
         )
         return
 
     if not is_allowed(user_id):
+
         await update.message.reply_text(
             "⛔ Sizga botdan foydalanish uchun ruxsat berilmagan."
         )
@@ -311,14 +366,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def start_test(update, context):
 
     if not questions:
+
         await update.message.reply_text(
             "❌ Savollar topilmadi"
         )
         return
 
-    context.user_data["quiz"] = random.sample(
-        questions,
-        min(30, len(questions))
+    context.user_data["quiz"] = generate_quiz(
+        context.user_data
     )
 
     context.user_data["index"] = 0
@@ -357,25 +412,10 @@ async def send_question(update, context):
 
     buttons = [
         [
-            InlineKeyboardButton(
-                "A",
-                callback_data="A"
-            ),
-
-            InlineKeyboardButton(
-                "B",
-                callback_data="B"
-            ),
-
-            InlineKeyboardButton(
-                "C",
-                callback_data="C"
-            ),
-
-            InlineKeyboardButton(
-                "D",
-                callback_data="D"
-            )
+            InlineKeyboardButton("A", callback_data="A"),
+            InlineKeyboardButton("B", callback_data="B"),
+            InlineKeyboardButton("C", callback_data="C"),
+            InlineKeyboardButton("D", callback_data="D")
         ]
     ]
 
@@ -394,7 +434,8 @@ async def send_question(update, context):
 # CALLBACK
 # =========================
 
-async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def callbacks(update: Update,
+                    context: ContextTypes.DEFAULT_TYPE):
 
     query = update.callback_query
     user_id = update.effective_user.id
@@ -449,7 +490,9 @@ async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
         cur = conn.cursor()
 
         users = cur.execute("""
-        SELECT u.full_name, u.username, a.user_id
+        SELECT u.full_name,
+               u.username,
+               a.user_id
         FROM allowed_users a
         LEFT JOIN users u
         ON a.user_id = u.user_id
@@ -458,6 +501,7 @@ async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
         conn.close()
 
         if not users:
+
             await query.message.reply_text(
                 "Userlar yo‘q"
             )
@@ -468,7 +512,12 @@ async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
         for i, u in enumerate(users, start=1):
 
             name = u[0] if u[0] else "NoName"
-            username = f"@{u[1]}" if u[1] else "username yo‘q"
+
+            username = (
+                f"@{u[1]}"
+                if u[1]
+                else "username yo‘q"
+            )
 
             text += (
                 f"{i}. {name}\n"
@@ -478,7 +527,7 @@ async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         await query.message.reply_text(text)
 
-    # BLOCKED
+    # BLOCK LIST
 
     elif query.data == "show_blocked":
 
@@ -486,7 +535,9 @@ async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
         cur = conn.cursor()
 
         blocked = cur.execute("""
-        SELECT b.user_id, u.full_name, u.username
+        SELECT b.user_id,
+               u.full_name,
+               u.username
         FROM blocked_users b
         LEFT JOIN users u
         ON b.user_id = u.user_id
@@ -495,6 +546,7 @@ async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
         conn.close()
 
         if not blocked:
+
             await query.message.reply_text(
                 "🚫 Block list bo‘sh"
             )
@@ -505,7 +557,12 @@ async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
         for i, b in enumerate(blocked, start=1):
 
             name = b[1] if b[1] else "NoName"
-            username = f"@{b[2]}" if b[2] else "username yo‘q"
+
+            username = (
+                f"@{b[2]}"
+                if b[2]
+                else "username yo‘q"
+            )
 
             text += (
                 f"{i}. {name}\n"
@@ -522,17 +579,20 @@ async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
         conn = sqlite3.connect("bot_data.db")
         cur = conn.cursor()
 
-        total_users = cur.execute(
-            "SELECT COUNT(*) FROM users"
-        ).fetchone()[0]
+        total_users = cur.execute("""
+        SELECT COUNT(*)
+        FROM users
+        """).fetchone()[0]
 
-        allowed = cur.execute(
-            "SELECT COUNT(*) FROM allowed_users"
-        ).fetchone()[0]
+        allowed = cur.execute("""
+        SELECT COUNT(*)
+        FROM allowed_users
+        """).fetchone()[0]
 
-        blocked = cur.execute(
-            "SELECT COUNT(*) FROM blocked_users"
-        ).fetchone()[0]
+        blocked = cur.execute("""
+        SELECT COUNT(*)
+        FROM blocked_users
+        """).fetchone()[0]
 
         tests = cur.execute("""
         SELECT SUM(tests_count)
@@ -573,6 +633,7 @@ async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
         conn.close()
 
         if not users:
+
             await query.message.reply_text(
                 "Userlar yo‘q"
             )
@@ -597,19 +658,19 @@ async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         await query.message.reply_text(text)
 
-    # ADD
+    # ADD USER
 
     elif query.data == "add_user":
 
         context.user_data["mode"] = "add"
 
         await query.message.reply_text(
-            "➕ Qo‘shiladigan ID(lar)ni yuboring.\n\n"
+            "➕ Qo‘shiladigan ID(lar)ni yuboring\n\n"
             "Misol:\n"
             "123456789 987654321"
         )
 
-    # BLOCK
+    # BLOCK USER
 
     elif query.data == "block_user":
 
@@ -619,7 +680,7 @@ async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "🚫 Block qilinadigan ID(lar)ni yuboring"
         )
 
-    # UNBLOCK
+    # UNBLOCK USER
 
     elif query.data == "unblock_user":
 
@@ -629,7 +690,7 @@ async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "🔓 Blockdan chiqariladigan ID(lar)ni yuboring"
         )
 
-    # SEARCH
+    # SEARCH USER
 
     elif query.data == "search_user":
 
@@ -645,13 +706,14 @@ async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # TEXT HANDLER
 # =========================
 
-async def texts(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def texts(update: Update,
+                context: ContextTypes.DEFAULT_TYPE):
 
     user_id = update.effective_user.id
     text = update.message.text
 
     # =====================
-    # ADMIN MODES
+    # ADMIN MODE
     # =====================
 
     mode = context.user_data.get("mode")
@@ -662,6 +724,7 @@ async def texts(update: Update, context: ContextTypes.DEFAULT_TYPE):
         cur = conn.cursor()
 
         # ADD
+
         if mode == "add":
 
             ids = text.split()
@@ -669,7 +732,9 @@ async def texts(update: Update, context: ContextTypes.DEFAULT_TYPE):
             added = 0
 
             for uid in ids:
+
                 try:
+
                     cur.execute("""
                     INSERT OR IGNORE
                     INTO allowed_users(user_id)
@@ -693,6 +758,7 @@ async def texts(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         # BLOCK
+
         elif mode == "block":
 
             ids = text.split()
@@ -702,6 +768,7 @@ async def texts(update: Update, context: ContextTypes.DEFAULT_TYPE):
             for uid in ids:
 
                 try:
+
                     uid = int(uid)
 
                     if uid == ADMIN_ID:
@@ -730,6 +797,7 @@ async def texts(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         # UNBLOCK
+
         elif mode == "unblock":
 
             ids = text.split()
@@ -739,6 +807,7 @@ async def texts(update: Update, context: ContextTypes.DEFAULT_TYPE):
             for uid in ids:
 
                 try:
+
                     cur.execute("""
                     DELETE FROM blocked_users
                     WHERE user_id=?
@@ -761,6 +830,7 @@ async def texts(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         # SEARCH
+
         elif mode == "search":
 
             username = text.replace("@", "")
@@ -782,7 +852,6 @@ async def texts(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text(
                     "❌ Topilmadi"
                 )
-
                 return
 
             msg = "🔍 Natijalar:\n\n"
@@ -806,7 +875,7 @@ async def texts(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
     # =====================
-    # ODATIY MENYU
+    # MENYU
     # =====================
 
     if text == "📝 Test ishlash":
@@ -848,12 +917,12 @@ async def texts(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(
                 "📭 Natija topilmadi"
             )
-
             return
 
         avg = 0
 
         if user[0] > 0:
+
             avg = round(
                 (user[1] / (user[0] * 30)) * 100,
                 1
